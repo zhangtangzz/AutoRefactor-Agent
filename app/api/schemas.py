@@ -5,14 +5,16 @@ from pydantic import BaseModel, Field
 
 # --- 认证 ---
 class LoginRequest(BaseModel):
-    user_id: str = Field(..., description="用户ID")
-    role: str = Field(default="viewer", description="角色: admin / user / viewer")
+    username: str = Field(..., min_length=1, max_length=64, description="用户名")
+    password: str = Field(..., min_length=1, max_length=128, description="密码")
 
 
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int
+    username: str = ""
+    role: str = ""
 
 
 # --- 问答 ---
@@ -52,6 +54,41 @@ class DocumentInfo(BaseModel):
 class DocumentListResponse(BaseModel):
     documents: List[DocumentInfo]
     total: int
+
+
+# --- 管理员：用户管理 ---
+class UserInfo(BaseModel):
+    id: int
+    username: str
+    role: str
+    created_at: str
+
+
+class UserListResponse(BaseModel):
+    users: List[UserInfo]
+    total: int
+
+
+class CreateUserRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=1, max_length=128)
+    role: str = Field(default="user")
+
+
+class UpdateRoleRequest(BaseModel):
+    role: str = Field(..., pattern="^(admin|user|viewer)$")
+
+
+class ResetPasswordRequest(BaseModel):
+    new_password: str = Field(..., min_length=1, max_length=128)
+
+
+# --- 管理员：统计 ---
+class AdminStatsResponse(BaseModel):
+    user_count: int = 0
+    document_count: int = 0
+    vector_chunk_count: int = 0
+    redis_connected: bool = False
 
 
 # --- 通用 ---

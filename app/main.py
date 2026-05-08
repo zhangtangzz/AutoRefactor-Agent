@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router as api_router, redis_cache
+from app.auth.database import init_db
 from app.config import settings
 from app.websocket.handler import ws_router
 
@@ -14,7 +15,8 @@ BASE_DIR = Path(__file__).parent.parent
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动时连接Redis
+    # 启动时初始化数据库并连接Redis
+    await init_db()
     await redis_cache.connect()
     yield
     # 关闭时断开Redis

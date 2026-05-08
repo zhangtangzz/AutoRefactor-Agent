@@ -9,16 +9,31 @@ from fastapi.responses import StreamingResponse
 from app.agent.conversation import ConversationMemory
 from app.agent.qa_agent import QAAgent
 from app.api.schemas import (
+    AdminStatsResponse,
     AskRequest,
     AskResponse,
     ConversationResponse,
+    CreateUserRequest,
     DocumentInfo,
     DocumentListResponse,
     DocumentUploadResponse,
     ErrorResponse,
     HealthResponse,
     LoginRequest,
+    ResetPasswordRequest,
     TokenResponse,
+    UpdateRoleRequest,
+    UserInfo,
+    UserListResponse,
+)
+from app.auth.database import (
+    create_user,
+    delete_user,
+    get_user_count,
+    list_users,
+    reset_user_password,
+    update_user_role,
+    verify_user,
 )
 from app.auth.jwt_handler import TokenPayload, create_access_token, get_current_user
 from app.auth.rbac import Role, require_permission, require_role
@@ -54,14 +69,17 @@ def _get_or_create_agent(session_id: Optional[str] = None) -> tuple[QAAgent, str
 
 @router.post("/auth/login", response_model=TokenResponse, tags=["认证"])
 async def login(body: LoginRequest):
-    """获取JWT访问令牌"""
-    allowed_roles = {r.value for r in Role}
-    if body.role not in allowed_roles:
-        raise HTTPException(status_code=400, detail=f"无效角色: {body.role}")
-    token = create_access_token(user_id=body.user_id, role=body.role)
+    """用户名密码登录，返回JWT访问令牌"""
+    user = await verify_user(body.username, body.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+    token = create_access_token(user_id=user["username"], role=user["role"])
     return TokenResponse(
         access_token=token,
         expires_in=settings.JWT_EXPIRE_MINUTES * 60,
+        username=user["username"],
+        role=user["role"],
     )
 
 
@@ -79,7 +97,6 @@ async def ask_question(
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
-    # 保存到Redis
     await redis_cache.save_conversation(sid, agent.conversation)
     _local_conversations[sid] = agent.conversation
 
@@ -119,7 +136,6 @@ async def get_conversation(
     current_user: TokenPayload = Depends(require_permission("ask")),
 ):
     """获取指定会话的对话历史"""
-    # 优先从Redis获取
     memory = await redis_cache.get_conversation(session_id)
     if memory is None:
         memory = _local_conversations.get(session_id)
@@ -155,13 +171,11 @@ async def upload_document(
     current_user: TokenPayload = Depends(require_permission("upload")),
 ):
     """上传文档并自动向量化"""
-    # 验证文件类型
     ext = os.path.splitext(file.filename or "")[1].lower()
     supported = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".txt", ".md", ".csv"}
     if ext not in supported:
         raise HTTPException(status_code=400, detail=f"不支持的文件格式: {ext}")
 
-    # 保存文件
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     safe_name = f"{uuid.uuid4().hex}_{file.filename}"
     file_path = os.path.join(settings.UPLOAD_DIR, safe_name)
@@ -173,7 +187,6 @@ async def upload_document(
     with open(file_path, "wb") as f:
         f.write(content)
 
-    # 解析并向量化
     try:
         docs = DocumentLoader.load(file_path)
         chunks = processor.split(docs)
@@ -195,12 +208,7 @@ async def list_documents(
 ):
     """列出所有已索引的文档"""
     sources = vector_store.list_sources()
-    docs = []
-    for src in sources:
-        docs.append(DocumentInfo(
-            source=src,
-            chunk_count=0,  # 简化处理
-        ))
+    docs = [DocumentInfo(source=src, chunk_count=0) for src in sources]
     return DocumentListResponse(documents=docs, total=len(docs))
 
 
@@ -211,7 +219,98 @@ async def delete_document(
 ):
     """从向量库中删除文档"""
     count = vector_store.delete_by_source(source_path)
+    # 同步删除上传目录中的文件
+    upload_path = os.path.join(settings.UPLOAD_DIR, os.path.basename(source_path))
+    if os.path.exists(upload_path):
+        os.remove(upload_path)
     return {"message": f"已删除 {count} 个文档块", "source": source_path, "chunks": count}
+
+
+# ==================== 管理员：用户管理 ====================
+
+@router.get("/admin/users", response_model=UserListResponse, tags=["管理员"])
+async def admin_list_users(
+    current_user: TokenPayload = Depends(require_permission("manage_users")),
+):
+    """列出所有用户"""
+    users = await list_users()
+    return UserListResponse(
+        users=[UserInfo(**u) for u in users],
+        total=len(users),
+    )
+
+
+@router.post("/admin/users", tags=["管理员"])
+async def admin_create_user(
+    body: CreateUserRequest,
+    current_user: TokenPayload = Depends(require_permission("manage_users")),
+):
+    """创建新用户"""
+    try:
+        user = await create_user(body.username, body.password, body.role)
+        return {"message": f"用户 '{body.username}' 创建成功", "user": user}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/admin/users/{username}/role", tags=["管理员"])
+async def admin_update_role(
+    username: str,
+    body: UpdateRoleRequest,
+    current_user: TokenPayload = Depends(require_permission("manage_users")),
+):
+    """修改用户角色"""
+    if username == current_user.sub and body.role != "admin":
+        raise HTTPException(status_code=400, detail="不能降低自己的角色权限")
+    ok = await update_user_role(username, body.role)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"用户 '{username}' 不存在")
+    return {"message": f"用户 '{username}' 角色已更新为 {body.role}"}
+
+
+@router.put("/admin/users/{username}/password", tags=["管理员"])
+async def admin_reset_password(
+    username: str,
+    body: ResetPasswordRequest,
+    current_user: TokenPayload = Depends(require_permission("manage_users")),
+):
+    """重置用户密码"""
+    ok = await reset_user_password(username, body.new_password)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"用户 '{username}' 不存在")
+    return {"message": f"用户 '{username}' 密码已重置"}
+
+
+@router.delete("/admin/users/{username}", tags=["管理员"])
+async def admin_delete_user(
+    username: str,
+    current_user: TokenPayload = Depends(require_permission("manage_users")),
+):
+    """删除用户"""
+    if username == current_user.sub:
+        raise HTTPException(status_code=400, detail="不能删除自己的账号")
+    try:
+        ok = await delete_user(username)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"用户 '{username}' 不存在")
+    return {"message": f"用户 '{username}' 已删除"}
+
+
+# ==================== 管理员：统计 ====================
+
+@router.get("/admin/stats", response_model=AdminStatsResponse, tags=["管理员"])
+async def admin_stats(
+    current_user: TokenPayload = Depends(require_permission("view_stats")),
+):
+    """系统统计信息"""
+    return AdminStatsResponse(
+        user_count=await get_user_count(),
+        document_count=len(vector_store.list_sources()),
+        vector_chunk_count=vector_store.get_document_count(),
+        redis_connected=redis_cache.is_connected,
+    )
 
 
 # ==================== 系统 ====================
