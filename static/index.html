@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>企业智能问答 Agent</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f5f7fa; color: #1a1a2e;
+            min-height: 100vh;
+        }
+        .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white; padding: 24px 20px; text-align: center;
+            border-radius: 0 0 20px 20px; margin-bottom: 24px;
+        }
+        header h1 { font-size: 1.6rem; margin-bottom: 4px; }
+        header p { opacity: 0.85; font-size: 0.9rem; }
+        .card {
+            background: white; border-radius: 12px; padding: 20px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.06); margin-bottom: 16px;
+        }
+        .card h3 { margin-bottom: 12px; color: #4a4a6a; font-size: 1rem; }
+        .input-row { display: flex; gap: 10px; margin-bottom: 10px; }
+        input, textarea, select {
+            flex: 1; padding: 10px 14px; border: 1px solid #e0e0e0;
+            border-radius: 8px; font-size: 0.95rem; outline: none;
+            transition: border-color 0.2s;
+        }
+        input:focus, textarea:focus, select:focus { border-color: #667eea; }
+        textarea { resize: vertical; min-height: 80px; }
+        button {
+            padding: 10px 24px; border: none; border-radius: 8px;
+            font-size: 0.95rem; cursor: pointer; font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-primary { background: #667eea; color: white; }
+        .btn-primary:hover { background: #5a6fd6; }
+        .btn-danger { background: #ff4757; color: white; }
+        .btn-danger:hover { background: #ee3a4a; }
+        .btn-sm { padding: 6px 14px; font-size: 0.85rem; }
+
+        #chatArea {
+            max-height: 500px; overflow-y: auto; padding: 10px;
+        }
+        .msg { margin-bottom: 14px; padding: 12px 16px; border-radius: 10px; }
+        .msg-user { background: #eef0ff; margin-left: 20px; }
+        .msg-assistant { background: #f0fdf4; margin-right: 20px; }
+        .msg .label { font-size: 0.75rem; font-weight: 700; margin-bottom: 4px; }
+        .msg-user .label { color: #667eea; }
+        .msg-assistant .label { color: #10b981; }
+        .msg .sources { margin-top: 6px; font-size: 0.8rem; color: #888; }
+        .msg .sources span { background: #f0f0f0; padding: 2px 8px; border-radius: 4px; margin-right: 4px; }
+
+        .status-bar {
+            display: flex; justify-content: space-between; align-items: center;
+            font-size: 0.8rem; color: #888; margin-top: 10px;
+        }
+        .token-info {
+            background: #fff3cd; padding: 8px 14px; border-radius: 6px;
+            font-size: 0.8rem; margin-bottom: 10px; word-break: break-all;
+        }
+        .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+        .tab {
+            padding: 8px 20px; border-radius: 8px 8px 0 0; cursor: pointer;
+            background: #e8e8e8; font-size: 0.9rem;
+        }
+        .tab.active { background: white; font-weight: 600; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>企业智能问答 Agent</h1>
+            <p>基于 RAG 架构 | 支持多轮对话 | 实时文档检索</p>
+        </header>
+
+        <div class="card">
+            <h3>认证配置</h3>
+            <div class="input-row">
+                <input type="text" id="userId" placeholder="用户ID" value="demo">
+                <select id="userRole">
+                    <option value="admin">管理员 (admin)</option>
+                    <option value="user" selected>普通用户 (user)</option>
+                    <option value="viewer">只读用户 (viewer)</option>
+                </select>
+                <button class="btn-primary" onclick="login()">获取Token</button>
+            </div>
+            <div id="tokenInfo" class="token-info" style="display:none;"></div>
+        </div>
+
+        <div class="tabs">
+            <div class="tab active" onclick="switchTab('chat')">智能问答</div>
+            <div class="tab" onclick="switchTab('upload')">文档管理</div>
+        </div>
+
+        <div id="chatTab" class="tab-content active">
+            <div class="card">
+                <h3>会话ID: <span id="sessionId">-</span></h3>
+                <div id="chatArea"></div>
+            </div>
+            <div class="card">
+                <div class="input-row">
+                    <textarea id="question" placeholder="请输入您的问题..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();askQuestion();}"></textarea>
+                </div>
+                <div class="input-row">
+                    <button class="btn-primary" onclick="askQuestion()">发送问题</button>
+                    <button class="btn-primary" onclick="askStream()">流式问答 (SSE)</button>
+                    <button class="btn-danger btn-sm" onclick="clearChat()">清除对话</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="uploadTab" class="tab-content">
+            <div class="card">
+                <h3>上传文档</h3>
+                <div class="input-row">
+                    <input type="file" id="fileInput" accept=".pdf,.docx,.doc,.xlsx,.xls,.txt,.md,.csv">
+                    <button class="btn-primary" onclick="uploadDocument()">上传并向量化</button>
+                </div>
+                <div id="uploadResult"></div>
+            </div>
+            <div class="card">
+                <h3>已索引文档</h3>
+                <button class="btn-sm btn-primary" onclick="listDocuments()">刷新列表</button>
+                <div id="docList" style="margin-top:10px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let token = '';
+        let sessionId = '';
+        const API_BASE = '/api/v1';
+
+        function showTokenInfo(text) {
+            const el = document.getElementById('tokenInfo');
+            el.style.display = 'block';
+            el.textContent = 'Token: ' + text.substring(0, 80) + '...';
+        }
+
+        async function login() {
+            const userId = document.getElementById('userId').value;
+            const role = document.getElementById('userRole').value;
+            const resp = await fetch(API_BASE + '/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: userId, role: role })
+            });
+            const data = await resp.json();
+            if (data.access_token) {
+                token = data.access_token;
+                showTokenInfo(token);
+                alert('登录成功！角色: ' + role);
+            } else {
+                alert('登录失败: ' + JSON.stringify(data));
+            }
+        }
+
+        const authHeaders = () => ({
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + token
+        });
+
+        async function askQuestion() {
+            const question = document.getElementById('question').value.trim();
+            if (!question) return;
+            if (!token) { alert('请先获取Token'); return; }
+
+            appendMessage('user', question);
+            document.getElementById('question').value = '';
+
+            const resp = await fetch(API_BASE + '/ask', {
+                method: 'POST',
+                headers: authHeaders(),
+                body: JSON.stringify({ question, session_id: sessionId || null })
+            });
+            const data = await resp.json();
+            if (data.session_id) sessionId = data.session_id;
+            document.getElementById('sessionId').textContent = sessionId || '-';
+            appendMessage('assistant', data.answer, data.sources);
+        }
+
+        async function askStream() {
+            const question = document.getElementById('question').value.trim();
+            if (!question) return;
+            if (!token) { alert('请先获取Token'); return; }
+
+            appendMessage('user', question);
+            document.getElementById('question').value = '';
+
+            const msgDiv = appendMessage('assistant', '', []);
+            const resp = await fetch(API_BASE + '/ask/stream', {
+                method: 'POST',
+                headers: authHeaders(),
+                body: JSON.stringify({ question, session_id: sessionId || null })
+            });
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let answer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const text = decoder.decode(value, { stream: true });
+                for (const line of text.split('\n')) {
+                    const data = line.replace('data: ', '').trim();
+                    if (data && data !== '[DONE]') {
+                        answer += data;
+                        msgDiv.querySelector('.content').textContent = answer;
+                    }
+                }
+            }
+        }
+
+        function appendMessage(role, content, sources = []) {
+            const area = document.getElementById('chatArea');
+            const div = document.createElement('div');
+            div.className = 'msg msg-' + role;
+            div.innerHTML = '<div class="label">' + (role === 'user' ? '你' : 'AI助手') + '</div>'
+                + '<div class="content">' + (content || '思考中...') + '</div>'
+                + (sources && sources.length ? '<div class="sources">来源: ' + sources.map(s => '<span>' + s + '</span>').join('') + '</div>' : '');
+            area.appendChild(div);
+            area.scrollTop = area.scrollHeight;
+            return div;
+        }
+
+        async function clearChat() {
+            if (sessionId && token) {
+                await fetch(API_BASE + '/conversation/' + sessionId, {
+                    method: 'DELETE', headers: authHeaders()
+                });
+            }
+            sessionId = '';
+            document.getElementById('sessionId').textContent = '-';
+            document.getElementById('chatArea').innerHTML = '';
+        }
+
+        async function uploadDocument() {
+            if (!token) { alert('请先获取Token'); return; }
+            const file = document.getElementById('fileInput').files[0];
+            if (!file) { alert('请选择文件'); return; }
+
+            const form = new FormData();
+            form.append('file', file);
+
+            const resp = await fetch(API_BASE + '/documents/upload', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer ' + token },
+                body: form
+            });
+            const data = await resp.json();
+            document.getElementById('uploadResult').innerHTML =
+                '<p style="color:green;margin-top:10px;">' + data.message + '</p>';
+        }
+
+        async function listDocuments() {
+            if (!token) { alert('请先获取Token'); return; }
+            const resp = await fetch(API_BASE + '/documents', { headers: authHeaders() });
+            const data = await resp.json();
+            const el = document.getElementById('docList');
+            if (!data.documents || !data.documents.length) {
+                el.innerHTML = '<p style="color:#888;">暂无已索引文档</p>';
+                return;
+            }
+            el.innerHTML = data.documents.map(d =>
+                '<div style="padding:6px 0;border-bottom:1px solid #eee;">' + d.source + '</div>'
+            ).join('');
+        }
+
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach((t, i) => {
+                t.classList.toggle('active', i === (tab === 'chat' ? 0 : 1));
+            });
+            document.getElementById('chatTab').classList.toggle('active', tab === 'chat');
+            document.getElementById('uploadTab').classList.toggle('active', tab === 'upload');
+        }
+    </script>
+</body>
+</html>

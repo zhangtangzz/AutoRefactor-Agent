@@ -1,0 +1,37 @@
+# LLM & Agent
+anthropic>=0.39.0
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-anthropic>=0.3.0
+langchain-huggingface>=0.2.0
+langchain-text-splitters>=0.3.0
+
+# Web Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+websockets>=13.0
+python-multipart>=0.0.12
+
+# Auth
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+pydantic[email]>=2.0.0
+
+# Vector DB & Embeddings
+chromadb>=0.5.0
+# 使用 sentence-transformers 做本地 embedding（无需额外API费用）
+sentence-transformers>=3.0.0
+
+# Document Parsing
+PyPDF2>=3.0.0
+pdfplumber>=0.11.0
+python-docx>=1.1.0
+openpyxl>=3.1.0
+
+# Cache
+redis>=5.0.0
+hiredis>=2.3.0
+
+# Utils
+python-dotenv>=1.0.0
+httpx>=0.27.0
